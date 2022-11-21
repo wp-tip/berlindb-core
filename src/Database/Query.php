@@ -506,7 +506,8 @@ class Query extends Base {
 	}
 
 	private function set_cache() {
-		$this->cache = new ( __NAMESPACE__ . '\\Cache' )( $this->cache_group );
+		$cache_object = __NAMESPACE__ . '\\Cache';
+		$this->cache = new $cache_object( $this->cache_group );
 	}
 
 	/**
