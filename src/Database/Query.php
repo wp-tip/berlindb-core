@@ -282,6 +282,15 @@ class Query extends Base {
 	 */
 	protected $request = '';
 
+	/**
+	 * Cache instance.
+	 *
+	 * @var Cache
+	 */
+	private $cache;
+
+	public $use_cache = true;
+
 	/** Methods ***************************************************************/
 
 	/**
@@ -326,6 +335,7 @@ class Query extends Base {
 		$this->set_columns();
 		$this->set_item_shape();
 		$this->set_query_var_defaults();
+		$this->set_cache();
 
 		// Maybe execute a query if arguments were passed
 		if ( ! empty( $query ) ) {
@@ -344,10 +354,10 @@ class Query extends Base {
 	 * @param string|array $query Array or URL query string of parameters.
 	 * @return array|int List of items, or number of items when 'count' is passed as a query var.
 	 */
-	public function query( $query = array() ) {
+	public function query( $query = array(), $use_cache = true ) {
 		$this->parse_query( $query );
 
-		return $this->get_items();
+		return $this->get_items( $use_cache );
 	}
 
 	/** Private Setters *******************************************************/
@@ -493,6 +503,10 @@ class Query extends Base {
 			$key = "{$date}_query";
 			$this->query_var_defaults[ $key ] = false;
 		}
+	}
+
+	private function set_cache() {
+		$this->cache = new ( __NAMESPACE__ . '\\Cache' )( $this->cache_group );
 	}
 
 	/**
@@ -859,7 +873,8 @@ class Query extends Base {
 	 *
 	 * @return array|int List of items, or number of items when 'count' is passed as a query var.
 	 */
-	private function get_items() {
+	private function get_items( $use_cache = true ) {
+		$use_cache &= $this->use_cache;
 
 		/**
 		 * Fires before object items are retrieved.
@@ -878,9 +893,8 @@ class Query extends Base {
 			$this->query_vars['update_meta_cache'] = false;
 		}
 
-		// Check the cache
-		$cache_key   = $this->get_cache_key();
-		$cache_value = $this->cache_get( $cache_key, $this->cache_group );
+		$cache_key = $this->get_cache_key();
+		$cache_value = $use_cache ? $this->cache->get( $cache_key, $this->cache_group ) : false;
 
 		// No cache value
 		if ( false === $cache_value ) {
@@ -889,14 +903,16 @@ class Query extends Base {
 			// Set the number of found items
 			$this->set_found_items( $item_ids );
 
-			// Format the cached value
-			$cache_value = array(
-				'item_ids'    => $item_ids,
-				'found_items' => intval( $this->found_items ),
-			);
-
 			// Add value to the cache
-			$this->cache_add( $cache_key, $cache_value, $this->cache_group );
+			if ( $use_cache ) {
+				// Format the cached value
+				$cache_value = array(
+					'item_ids'    => $item_ids,
+					'found_items' => intval( $this->found_items ),
+				);
+
+				$this->cache->add( $cache_key, $cache_value, $this->cache_group );
+			}
 
 		// Value exists in cache
 		} else {
@@ -1723,7 +1739,7 @@ class Query extends Base {
 			return $retval;
 		}
 
-		// Get all of the column names
+		// Get all column names.
 		$columns = $this->get_column_names();
 
 		// Bail if column does not exist
@@ -1731,12 +1747,14 @@ class Query extends Base {
 			return $retval;
 		}
 
-		// Get all of the cache groups
-		$groups = $this->get_cache_groups();
+		if ( $this->use_cache ) {
+			// Get all cache groups.
+			$groups = $this->get_cache_groups();
 
-		// Check cache
-		if ( ! empty( $groups[ $column_name ] ) ) {
-			$retval = $this->cache_get( $column_value, $groups[ $column_name ] );
+			// Check cache
+			if ( ! empty( $groups[ $column_name ] ) ) {
+				$retval = $this->cache->get( $column_value, $groups[ $column_name ] );
+			}
 		}
 
 		// Item not cached
@@ -1750,8 +1768,10 @@ class Query extends Base {
 				return false;
 			}
 
-			// Update item cache(s)
-			$this->update_item_cache( $retval );
+			if ( $this->use_cache ) {
+				// Update item cache(s)
+				$this->update_item_cache( $retval );
+			}
 		}
 
 		// Reduce the item
@@ -2766,7 +2786,7 @@ class Query extends Base {
 			// Loop through groups and set cache
 			if ( ! empty( $groups ) ) {
 				foreach ( $groups as $key => $group ) {
-					$this->cache_set( $item->{$key}, $item, $group );
+					$this->cache->set( $item->{$key}, $item, $group );
 				}
 			}
 		}
@@ -2816,7 +2836,7 @@ class Query extends Base {
 			// Loop through groups and delete cache
 			if ( ! empty( $groups ) ) {
 				foreach ( $groups as $key => $group ) {
-					$this->cache_delete( $item->{$key}, $group );
+					$this->cache->delete( $item->{$key}, $group );
 				}
 			}
 		}
@@ -2840,7 +2860,7 @@ class Query extends Base {
 		}
 
 		// Set the last changed time for this cache group
-		$this->cache_set( 'last_changed', $this->last_changed, $group );
+		$this->cache->set( 'last_changed', $this->last_changed, $group );
 
 		// Return the last changed time
 		return $this->last_changed;
@@ -2856,9 +2876,8 @@ class Query extends Base {
 	 * @return string The last time a cache group was changed.
 	 */
 	private function get_last_changed_cache( $group = '' ) {
-
 		// Get the last changed cache value
-		$last_changed = $this->cache_get( 'last_changed', $group );
+		$last_changed = $this->cache->get( 'last_changed', $group );
 
 		// Maybe update the last changed value
 		if ( false === $last_changed ) {
@@ -2896,124 +2915,13 @@ class Query extends Base {
 			$id = $this->shape_item_id( $id );
 
 			// Add to return value if not cached
-			if ( false === $this->cache_get( $id, $group ) ) {
+			if ( $this->use_cache && false === $this->cache->get( $id, $group ) ) {
 				$retval[] = $id;
 			}
 		}
 
 		// Return array of IDs
 		return $retval;
-	}
-
-	/**
-	 * Add a cache value for a key and group.
-	 *
-	 * @since 1.0.0
-	 *
-	 * @param string $key    Cache key.
-	 * @param mixed  $value  Cache value.
-	 * @param string $group  Cache group. Defaults to $this->cache_group
-	 * @param int    $expire Expiration.
-	 */
-	private function cache_add( $key = '', $value = '', $group = '', $expire = 0 ) {
-
-		// Bail if cache invalidation is suspended
-		if ( wp_suspend_cache_addition() ) {
-			return;
-		}
-
-		// Bail if no cache key
-		if ( empty( $key ) ) {
-			return;
-		}
-
-		// Get the cache group
-		$group = $this->get_cache_group( $group );
-
-		// Add to the cache
-		wp_cache_add( $key, $value, $group, $expire );
-	}
-
-	/**
-	 * Get a cache value for a key and group.
-	 *
-	 * @since 1.0.0
-	 *
-	 * @param string  $key   Cache key.
-	 * @param string  $group Cache group. Defaults to $this->cache_group
-	 * @param bool    $force
-	 */
-	private function cache_get( $key = '', $group = '', $force = false ) {
-
-		// Bail if no cache key
-		if ( empty( $key ) ) {
-			return;
-		}
-
-		// Get the cache group
-		$group = $this->get_cache_group( $group );
-
-		// Return from the cache
-		return wp_cache_get( $key, $group, $force );
-	}
-
-	/**
-	 * Set a cache value for a key and group.
-	 *
-	 * @since 1.0.0
-	 *
-	 * @param string $key    Cache key.
-	 * @param mixed  $value  Cache value.
-	 * @param string $group  Cache group. Defaults to $this->cache_group
-	 * @param int    $expire Expiration.
-	 */
-	private function cache_set( $key = '', $value = '', $group = '', $expire = 0 ) {
-
-		// Bail if cache invalidation is suspended
-		if ( wp_suspend_cache_addition() ) {
-			return;
-		}
-
-		// Bail if no cache key
-		if ( empty( $key ) ) {
-			return;
-		}
-
-		// Get the cache group
-		$group = $this->get_cache_group( $group );
-
-		// Update the cache
-		wp_cache_set( $key, $value, $group, $expire );
-	}
-
-	/**
-	 * Delete a cache key for a group.
-	 *
-	 * @since 1.0.0
-	 *
-	 * @global bool $_wp_suspend_cache_invalidation
-	 *
-	 * @param string $key   Cache key.
-	 * @param string $group Cache group. Defaults to $this->cache_group
-	 */
-	private function cache_delete( $key = '', $group = '' ) {
-		global $_wp_suspend_cache_invalidation;
-
-		// Bail if cache invalidation is suspended
-		if ( ! empty( $_wp_suspend_cache_invalidation ) ) {
-			return;
-		}
-
-		// Bail if no cache key
-		if ( empty( $key ) ) {
-			return;
-		}
-
-		// Get the cache group
-		$group = $this->get_cache_group( $group );
-
-		// Delete the cache
-		wp_cache_delete( $key, $group );
 	}
 
 	/**
@@ -3154,4 +3062,5 @@ class Query extends Base {
 		// Return results
 		return $results;
 	}
+
 }
